@@ -30,7 +30,8 @@ jobs:
         with:
           path: dist
 
-  # Self-enable the Pages site if it doesn't exist yet (GITHUB_TOKEN has pages:write)
+  # Self-enable the Pages site if it doesn't exist yet (GITHUB_TOKEN has pages:write).
+  # Never fails the run: surfaces the API response as an annotation instead.
   enable-pages:
     runs-on: ubuntu-latest
     steps:
@@ -38,14 +39,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set +e
           if gh api "repos/$GITHUB_REPOSITORY/pages" >/dev/null 2>&1; then
             echo "Pages site already enabled."
-          else
-            gh api "repos/$GITHUB_REPOSITORY/pages" -X POST -f build_type=workflow \
-              || gh api "repos/$GITHUB_REPOSITORY/pages" -X POST \
-                   -f "source[branch]=$GITHUB_REF_NAME" -f "source[path]=/" -f build_type=workflow
-            echo "Pages site created."
+            exit 0
           fi
+          out=$(gh api "repos/$GITHUB_REPOSITORY/pages" -X POST -f build_type=workflow 2>&1)
+          rc=$?
+          echo "attempt1 rc=$rc :: $out"
+          if [ $rc -ne 0 ]; then
+            out2=$(gh api "repos/$GITHUB_REPOSITORY/pages" -X POST \
+                   -f "source[branch]=$GITHUB_REF_NAME" -f "source[path]=/" 2>&1)
+            rc2=$?
+            echo "attempt2 rc=$rc2 :: $out2"
+            if [ $rc2 -ne 0 ]; then
+              echo "::error::PAGES_CREATE_FAILED:: $out | $out2"
+            fi
+          fi
+          exit 0
 
   deploy:
     needs: [build, enable-pages]
@@ -54,5 +65,14 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - name: Check Pages site state
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          out=$(gh api "repos/$GITHUB_REPOSITORY/pages" 2>&1)
+          echo "$out"
+          echo "$out" | grep -q '"html_url"' || echo "::error::NO_PAGES_SITE:: $out"
+          exit 0
       - id: deployment
         uses: actions/deploy-pages@v4
